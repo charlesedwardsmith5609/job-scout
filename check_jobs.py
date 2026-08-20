@@ -78,6 +78,21 @@ TITLE_MUST = [
     "vp of engineering",
     "vp, engineering",
     "engineering lead",
+    "manager of engineering",
+    "manager, engineering",
+    "manager, platform",
+    "manager, infrastructure",
+    "manager, developer",
+    "manager, cloud",
+    "manager, sre",
+    "manager, devops",
+    "manager, reliability",
+    "manager, backend",
+    "manager, compute",
+    "technology manager",
+    "technical manager",
+    "team lead, engineering",
+    "engineering team lead",
 ]
 
 TITLE_EXCLUDE = [
@@ -108,10 +123,28 @@ SCORING = [
     ("reliability",           3), ("eks",                  3),
     ("ai platform",           4), ("ml platform",          3),
     ("aws",                   2), ("terraform",            2),
-    # Level / remote signals
+    # Standalone department names (common in job titles like "Manager, Platform")
+    ("platform",              3), ("backend",              3),
+    ("cloud",                 2), ("data platform",        4),
+    # Level and location signals
     ("senior",                2), ("remote",               2),
     ("united states",         1),
 ]
+
+
+# Locations that are US/remote-eligible — anything else gets filtered out
+LOCATION_ALLOW = {
+    "remote", "worldwide", "anywhere", "global", "international",
+    "us", "usa", "u.s.", "united states", "north america", "americas",
+    "us or canada", "us/canada", "canada",
+}
+
+def location_ok(loc: str) -> bool:
+    """Return True if the location is plausibly US/remote-eligible."""
+    if not loc or not loc.strip():
+        return True   # unspecified = allow
+    l = loc.lower()
+    return any(p in l for p in LOCATION_ALLOW)
 
 def passes_title(title: str) -> bool:
     t = title.lower()
@@ -121,10 +154,14 @@ def passes_title(title: str) -> bool:
 def score(title: str, description: str = "", location: str = "") -> tuple[int, list[str]]:
     if not passes_title(title):
         return 0, []
+    if not location_ok(location):
+        return 0, []   # drop international-only roles
     blob  = f"{title} {description} {location}".lower()
-    noise = {"senior","remote","united states","aws","terraform",
-             "devops","reliability","sre","eks","ml platform","ai platform"}
-    total, hits = 0, []
+    noise = {"senior", "remote", "united states", "aws", "terraform",
+             "devops", "reliability", "sre", "eks", "ml platform",
+             "ai platform", "canada", "north america"}
+    # Base score of 3 so "Senior Engineering Manager" (title only) scores 5
+    total, hits = 3, []
     for kw, pts in SCORING:
         if kw in blob:
             total += pts
