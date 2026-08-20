@@ -1,0 +1,40 @@
+name: Daily Job Scout
+
+on:
+  schedule:
+    # 9:00 AM Pacific (16:00 UTC) every day
+    - cron: '0 16 * * *'
+  # Lets you trigger a manual run from the GitHub Actions tab
+  workflow_dispatch:
+
+jobs:
+  scan:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write   # needed to commit seen_jobs.json back
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install dependencies
+        run: pip install requests beautifulsoup4 lxml
+
+      - name: Run job scanner
+        env:
+          GMAIL_ADDRESS:      ${{ secrets.GMAIL_ADDRESS }}
+          GMAIL_APP_PASSWORD: ${{ secrets.GMAIL_APP_PASSWORD }}
+        run: python check_jobs.py
+
+      # Commits the updated seen_jobs.json so you don't get re-notified
+      # about jobs you've already seen.  [skip ci] prevents an infinite loop.
+      - name: Save seen jobs
+        uses: stefanzweifel/git-auto-commit-action@v5
+        with:
+          commit_message: "chore: update seen jobs [skip ci]"
+          file_pattern: seen_jobs.json
