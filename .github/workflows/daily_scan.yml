@@ -28,7 +28,10 @@ jobs:
         run: python check_jobs.py
 
       - name: Save seen jobs
-        uses: stefanzweifel/git-auto-commit-action@v5
-        with:
-          commit_message: "chore: update seen jobs [skip ci]"
-          file_pattern: seen_jobs.json
+        run: |
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git config user.name "github-actions[bot]"
+          git pull --rebase origin main || true
+          git add seen_jobs.json
+          git diff --staged --quiet || git commit -m "chore: update seen jobs [skip ci]"
+          git push
