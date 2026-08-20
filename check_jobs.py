@@ -75,8 +75,6 @@ TITLE_MUST = [
     "software engineering manager",
     "head of engineering",
     "director of engineering",
-    "vp of engineering",
-    "vp, engineering",
     "engineering lead",
     "manager of engineering",
     "manager, engineering",
@@ -93,6 +91,12 @@ TITLE_MUST = [
     "technical manager",
     "team lead, engineering",
     "engineering team lead",
+]
+
+# Titles that are too senior — excluded even if they contain TITLE_MUST keywords
+TITLE_TOO_SENIOR = [
+    "vp of engineering", "vp, engineering", "vice president",
+    "chief technology", "cto", "chief engineer",
 ]
 
 TITLE_EXCLUDE = [
@@ -146,8 +150,18 @@ def location_ok(loc: str) -> bool:
     l = loc.lower()
     return any(p in l for p in LOCATION_ALLOW)
 
+MIN_SALARY = 200_000   # only filter if explicit salary data is below this
+
+def salary_ok(salary_min) -> bool:
+    """Pass through if no salary data; filter only if clearly underpaid."""
+    if not salary_min or int(salary_min) <= 0:
+        return True
+    return int(salary_min) >= MIN_SALARY
+
 def passes_title(title: str) -> bool:
     t = title.lower()
+    if any(k in t for k in TITLE_TOO_SENIOR):
+        return False
     return (any(k in t for k in TITLE_MUST) and
             not any(k in t for k in TITLE_EXCLUDE))
 
@@ -281,14 +295,18 @@ def fetch_remoteok() -> list[dict]:
         title = j.get("position", "")
         desc  = j.get("description", "")
         loc   = j.get("location", "Remote")
+        if not salary_ok(j.get("salary_min")):
+            continue   # skip if salary data says it's below floor
         sc, kw = score(title, desc, loc)
         if sc >= MIN_SCORE:
+            sal = j.get("salary_min")
             jobs.append({
                 "id":       f"ro_{j.get('id','')}",
                 "title":    title,
                 "company":  j.get("company", "Unknown"),
                 "url":      j.get("url", ""),
                 "location": loc,
+                "salary":   f"${sal:,}+" if sal and int(sal) > 0 else "",
                 "score":    sc, "keywords": kw, "source": "RemoteOK",
             })
     return jobs
@@ -490,7 +508,7 @@ SOURCE_COLORS = {
     "Greenhouse":      "#1B2D4F", "Lever":           "#2D4F1B",
 }
 
-def build_email(matches: list[dict]) -> str:
+def build_email(matches: list[dict], source_stats: dict = None) -> str:
     now, count = datetime.now(timezone.utc).strftime("%B %d, %Y"), len(matches)
     ACCENT, TAG_BG = "#1E6FA8", "#E8F0FE"
 
@@ -512,6 +530,9 @@ def build_email(matches: list[dict]) -> str:
             f'display:inline-block">{k}</span>'
             for k in j["keywords"]
         )
+        sal = j.get("salary", "")
+        sal_html = (f'&nbsp;·&nbsp;<span style="color:#2e7d32;font-weight:600">'
+                    f'{sal}</span>') if sal else ""
         rows += f"""
         <tr>
           <td style="padding:13px 16px;border-bottom:1px solid #eee;vertical-align:top">
@@ -519,12 +540,29 @@ def build_email(matches: list[dict]) -> str:
               <a href="{j['url']}" style="color:#1B2D4F;font-weight:700;
                  font-size:14px;text-decoration:none">{j['title']}</a></div>
             <div style="color:#666;font-size:12px;margin:3px 0 6px">
-              <strong>{j['company']}</strong>&nbsp;·&nbsp;{j['location']}</div>
+              <strong>{j['company']}</strong>&nbsp;·&nbsp;{j['location']}{sal_html}</div>
             <div>{kws}</div>
           </td>
           <td style="padding:13px 16px;border-bottom:1px solid #eee;
               text-align:center;vertical-align:middle;width:56px">{badge(j['score'])}</td>
         </tr>"""
+
+    # Source stats footer
+    stats_html = ""
+    if source_stats:
+        total = sum(c for c, _ in source_stats.values())
+        rows_stat = "".join(
+            f'<span style="margin:0 8px;white-space:nowrap">'
+            f'<strong>{src}</strong>: {c} checked, {n} new</span>'
+            for src, (c, n) in source_stats.items() if c > 0
+        )
+        stats_html = f"""
+  <div style="padding:10px 16px;font-size:11px;color:#888;border-top:1px solid #EEE;
+      background:#F8F9FA">
+    <div style="margin-bottom:4px;color:#666;font-weight:600">
+      Source summary — {total} jobs evaluated today:</div>
+    <div style="line-height:2">{rows_stat}</div>
+  </div>"""
 
     return f"""<html><body style="margin:0;padding:20px;background:#F2F4F6;
   font-family:Calibri,Helvetica,Arial,sans-serif">
@@ -543,11 +581,11 @@ def build_email(matches: list[dict]) -> str:
           text-transform:uppercase;letter-spacing:.5px;width:56px">Score</th>
     </tr>{rows}
   </table>
-  <div style="padding:12px 16px;font-size:11px;color:#AAA;text-align:center;
+  <div style="padding:10px 16px;font-size:11px;color:#AAA;text-align:center;
       border-top:1px solid #EEE">
     green ≥ 15 &nbsp;·&nbsp; blue ≥ 8 &nbsp;·&nbsp; grey ≥ 4
-    &nbsp;&nbsp;|&nbsp;&nbsp; score = keyword match strength
   </div>
+  {stats_html}
 </div></body></html>"""
 
 def send_email(html: str, count: int) -> None:
@@ -568,8 +606,8 @@ def run_source(label: str, fn) -> list[dict]:
     print(f"\n── {label} {'─'*(42-len(label))}")
     try:
         results = fn()
-        if results:
-            print(f"   {len(results)} match(es)")
+        status = f"{len(results)} match(es)" if results else "0 matches"
+        print(f"   {status}")
         return results
     except Exception as e:
         print(f"   ⚠  Unhandled error: {e}", file=sys.stderr)
@@ -578,40 +616,51 @@ def run_source(label: str, fn) -> list[dict]:
 def main() -> None:
     print(f"Job Scout — {datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M UTC')}")
     seen, matches = load_seen(), []
+    source_stats  = {}   # label → (checked, new_matches)
 
-    def process(jobs: list[dict]) -> None:
+    def process(label: str, jobs: list[dict]) -> None:
+        new = 0
         for j in jobs:
             if j["id"] not in seen:
                 matches.append(j)
+                new += 1
                 print(f"   ✓ [{j['score']:2d}] {j['company']} — {j['title']}")
             seen.add(j["id"])
+        source_stats[label] = (len(jobs), new)
 
     # ── Broad discovery (all companies) ─────────────────────────────
-    process(run_source("Remotive",         fetch_remotive))
-    process(run_source("Jobicy",           fetch_jobicy))
-    process(run_source("Arbeitnow",        fetch_arbeitnow))
-    process(run_source("RemoteOK",         fetch_remoteok))
-    process(run_source("Working Nomads",   fetch_workingnomads))
-    process(run_source("We Work Remotely", fetch_wwr))
-    process(run_source("Wellfound",        fetch_wellfound))
-    process(run_source("Built In",         fetch_builtin))
+    for label, fn in [
+        ("Remotive",         fetch_remotive),
+        ("Jobicy",           fetch_jobicy),
+        ("Arbeitnow",        fetch_arbeitnow),
+        ("RemoteOK",         fetch_remoteok),
+        ("Working Nomads",   fetch_workingnomads),
+        ("We Work Remotely", fetch_wwr),
+        ("Wellfound",        fetch_wellfound),
+        ("Built In",         fetch_builtin),
+    ]:
+        process(label, run_source(label, fn))
 
     # ── Priority company boards (active pipeline) ────────────────────
     if PRIORITY_GREENHOUSE or PRIORITY_LEVER:
         print(f"\n── Priority Boards {'─'*23}")
         for name, slug in PRIORITY_GREENHOUSE.items():
             print(f"   Greenhouse / {name}…")
-            process(fetch_greenhouse_board(name, slug))
+            process(f"Greenhouse/{name}", fetch_greenhouse_board(name, slug))
         for name, slug in PRIORITY_LEVER.items():
             print(f"   Lever / {name}…")
-            process(fetch_lever_board(name, slug))
+            process(f"Lever/{name}", fetch_lever_board(name, slug))
 
     save_seen(seen)
+
+    total_checked = sum(c for c, _ in source_stats.values())
     print(f"\n{'─'*44}")
-    print(f"Total new matches: {len(matches)}")
+    print(f"Sources checked: {len(source_stats)}")
+    print(f"Jobs evaluated:  {total_checked}")
+    print(f"New matches:     {len(matches)}")
 
     if matches:
-        send_email(build_email(matches), len(matches))
+        send_email(build_email(matches, source_stats), len(matches))
     else:
         print("Nothing new — no email sent.")
 
